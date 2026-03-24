@@ -13,4 +13,8 @@ pub enum AutoTradeError {
     DailyTradeLimitExceeded = 7,
     PositionLimitExceeded = 8,
     StopLossTriggered = 9,
+    StrategyNotFound = 10,
+    PositionAlreadyExists = 11,
+    InsufficientPriceHistory = 12,
+    RankingDisabled = 13,
 }

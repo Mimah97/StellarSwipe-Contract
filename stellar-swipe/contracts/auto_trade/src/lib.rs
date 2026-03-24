@@ -10,6 +10,7 @@ mod portfolio;
 mod risk;
 mod sdex;
 mod storage;
+mod strategies;
 
 use crate::storage::DataKey;
 use errors::AutoTradeError;
