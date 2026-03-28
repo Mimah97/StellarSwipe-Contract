@@ -3,7 +3,7 @@
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Env, MuxedAddress,
+    Env, MuxedAddress, Vec,
 };
 
 /// Protocol fee rate: 0.1% = 10 basis points.
@@ -14,6 +14,9 @@ const MIN_FEE_STROOPS: i128 = 1;
 
 /// Default share of each fee credited to the signal provider (basis points). 5000 = 50%.
 const DEFAULT_PROVIDER_FEE_SHARE_BPS: u32 = 5_000;
+
+/// Maximum fee-exempt addresses (instance storage cap).
+const MAX_FEE_EXEMPT_ADDRESSES: u32 = 100;
 
 #[contract]
 pub struct FeeCollector;
@@ -30,10 +33,11 @@ pub struct ProviderPendingKey {
 #[derive(Clone)]
 pub enum StorageKey {
     AccumulatedFees(Address),
-    FeeExempt(Address),
     Admin,
     Treasury,
     ProviderFeeShareBps,
+    /// Admin-managed fee-exempt trading addresses (max [`MAX_FEE_EXEMPT_ADDRESSES`] entries).
+    FeeExemptList,
     /// Running total of `provider_share` not yet claimed (per provider + token).
     ProviderPendingFees(ProviderPendingKey),
 }
@@ -48,6 +52,8 @@ pub enum Error {
     Overflow = 4,
     /// `provider_fee_share_bps` must be in `0..=10_000`.
     InvalidProviderFeeShareBps = 5,
+    /// Fee-exempt list already holds [`MAX_FEE_EXEMPT_ADDRESSES`] entries.
+    FeeExemptListFull = 6,
 }
 
 #[contractevent]
@@ -72,6 +78,39 @@ pub struct FeeDistributed {
     pub treasury_share: i128,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeExemptAdded {
+    #[topic]
+    pub address: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeExemptRemoved {
+    #[topic]
+    pub address: Address,
+}
+
+fn load_fee_exempt_list(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&StorageKey::FeeExemptList)
+        .unwrap_or_else(|| Vec::<Address>::new(env))
+}
+
+fn fee_exempt_list_contains(list: &Vec<Address>, addr: &Address) -> bool {
+    let len = list.len();
+    let mut i: u32 = 0;
+    while i < len {
+        if list.get(i).unwrap() == *addr {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 #[contractimpl]
 impl FeeCollector {
     pub fn initialize(env: Env, admin: Address, treasury: Address) {
@@ -83,22 +122,60 @@ impl FeeCollector {
         env.storage()
             .instance()
             .set(&StorageKey::ProviderFeeShareBps, &DEFAULT_PROVIDER_FEE_SHARE_BPS);
+        let empty_exempt: Vec<Address> = Vec::new(&env);
+        env.storage()
+            .instance()
+            .set(&StorageKey::FeeExemptList, &empty_exempt);
     }
 
-    pub fn set_fee_exempt(env: Env, account: Address, exempt: bool) {
+    pub fn add_fee_exempt(env: Env, address: Address) {
         let admin: Address = env
             .storage()
             .instance()
             .get(&StorageKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
         admin.require_auth();
-        if exempt {
-            env.storage()
-                .persistent()
-                .set(&StorageKey::FeeExempt(account), &true);
-        } else {
-            env.storage().persistent().remove(&StorageKey::FeeExempt(account));
+        let mut list = load_fee_exempt_list(&env);
+        if fee_exempt_list_contains(&list, &address) {
+            return;
         }
+        if list.len() >= MAX_FEE_EXEMPT_ADDRESSES {
+            panic_with_error!(&env, Error::FeeExemptListFull);
+        }
+        list.push_back(address.clone());
+        env.storage().instance().set(&StorageKey::FeeExemptList, &list);
+        FeeExemptAdded { address }.publish(&env);
+    }
+
+    pub fn remove_fee_exempt(env: Env, address: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        admin.require_auth();
+        let list = load_fee_exempt_list(&env);
+        if !fee_exempt_list_contains(&list, &address) {
+            return;
+        }
+        let mut new_list: Vec<Address> = Vec::new(&env);
+        let len = list.len();
+        let mut i: u32 = 0;
+        while i < len {
+            let a = list.get(i).unwrap();
+            if a != address {
+                new_list.push_back(a);
+            }
+            i += 1;
+        }
+        env.storage()
+            .instance()
+            .set(&StorageKey::FeeExemptList, &new_list);
+        FeeExemptRemoved { address }.publish(&env);
+    }
+
+    pub fn get_fee_exempt_list(env: Env) -> Vec<Address> {
+        load_fee_exempt_list(&env)
     }
 
     /// Sets the provider’s share of each fee in basis points (0–10_000 = 0–100%).
@@ -139,11 +216,8 @@ impl FeeCollector {
             panic_with_error!(&env, Error::NonPositiveTrade);
         }
 
-        let fee_exempt: bool = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::FeeExempt(payer.clone()))
-            .unwrap_or(false);
+        let exempt_list = load_fee_exempt_list(&env);
+        let fee_exempt = fee_exempt_list_contains(&exempt_list, &payer);
 
         let fee = if fee_exempt {
             0
@@ -341,7 +415,7 @@ mod test {
         let env = Env::default();
         let (_admin, treasury, token, payer, client) = setup_fee_collector(&env);
         let provider = Address::generate(&env);
-        client.set_fee_exempt(&payer, &true);
+        client.add_fee_exempt(&payer);
         let trade_amount = 1_000_000i128;
         let fee = client.collect_fee(&payer, &trade_amount, &token, &provider);
         assert_eq!(fee, 0);
@@ -350,6 +424,61 @@ mod test {
         assert_eq!(TokenClient::new(&env, &token).balance(&treasury), 0);
         assert_eq!(client.get_provider_pending_fees(&provider, &token), 0);
         assert_eq!(client.get_accumulated_fees(&token), 0);
+    }
+
+    #[test]
+    fn remove_fee_exempt_restores_normal_fees() {
+        let env = Env::default();
+        let (_admin, treasury, token, payer, client) = setup_fee_collector(&env);
+        let provider = Address::generate(&env);
+        client.add_fee_exempt(&payer);
+        assert_eq!(client.get_fee_exempt_list().len(), 1);
+        client.remove_fee_exempt(&payer);
+        assert_eq!(client.get_fee_exempt_list().len(), 0);
+
+        let trade_amount = 1_000_000i128;
+        let fee = client.collect_fee(&payer, &trade_amount, &token, &provider);
+        assert_eq!(fee, 1_000);
+        assert_eq!(TokenClient::new(&env, &token).balance(&treasury), 500);
+    }
+
+    #[test]
+    fn duplicate_add_fee_exempt_is_idempotent() {
+        let env = Env::default();
+        let (_admin, _treasury, _token, payer, client) = setup_fee_collector(&env);
+        client.add_fee_exempt(&payer);
+        client.add_fee_exempt(&payer);
+        assert_eq!(client.get_fee_exempt_list().len(), 1);
+    }
+
+    #[test]
+    fn remove_fee_exempt_unknown_is_noop() {
+        let env = Env::default();
+        let (_admin, _treasury, _token, payer, client) = setup_fee_collector(&env);
+        let stranger = Address::generate(&env);
+        client.remove_fee_exempt(&stranger);
+        assert_eq!(client.get_fee_exempt_list().len(), 0);
+        client.add_fee_exempt(&payer);
+        client.remove_fee_exempt(&stranger);
+        assert_eq!(client.get_fee_exempt_list().len(), 1);
+    }
+
+    #[test]
+    fn fee_exempt_list_cap_enforced_at_100() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let contract_id = env.register(FeeCollector, ());
+        let client = FeeCollectorClient::new(&env, &contract_id);
+        client.initialize(&admin, &treasury);
+
+        for _ in 0..100 {
+            client.add_fee_exempt(&Address::generate(&env));
+        }
+        assert_eq!(client.get_fee_exempt_list().len(), 100);
+        let res = client.try_add_fee_exempt(&Address::generate(&env));
+        assert!(res.is_err());
     }
 
     #[test]
