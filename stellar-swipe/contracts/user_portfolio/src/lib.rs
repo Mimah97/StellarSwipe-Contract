@@ -1,12 +1,9 @@
-//! User portfolio contract: positions, `get_pnl`, and on-chain badges.
+//! User portfolio contract: positions and `get_pnl` (source of truth for portfolio performance).
 
 #![cfg_attr(target_family = "wasm", no_std)]
 
-mod badges;
 mod queries;
 mod storage;
-
-pub use badges::{Badge, BadgeType};
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
 use storage::DataKey;
@@ -45,13 +42,8 @@ pub struct UserPortfolio;
 
 #[contractimpl]
 impl UserPortfolio {
-    /// One-time setup: admin, oracle (`get_price() -> i128`), and max users who receive `EarlyAdopter`.
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        oracle: Address,
-        early_adopter_user_cap: u32,
-    ) {
+    /// One-time setup: admin and oracle (`get_price() -> i128`) used for unrealized P&L.
+    pub fn initialize(env: Env, admin: Address, oracle: Address) {
         if env.storage().instance().has(&DataKey::Initialized) {
             panic!("already initialized");
         }
@@ -60,25 +52,11 @@ impl UserPortfolio {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
         env.storage().instance().set(&DataKey::NextPositionId, &1u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::EarlyAdopterCap, &early_adopter_user_cap);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalUsersFirstOpen, &0u32);
     }
 
     pub fn set_oracle(env: Env, oracle: Address) {
         Self::require_admin(&env);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
-    }
-
-    /// Backend / admin sets current leaderboard rank (1 = best). Checked on open/close for `Top10Leaderboard`.
-    pub fn set_leaderboard_rank(env: Env, user: Address, rank: u32) {
-        Self::require_admin(&env);
-        env.storage()
-            .persistent()
-            .set(&DataKey::LeaderboardRank(user), &rank);
     }
 
     /// Opens a position for `user` (caller must be `user`). `amount` is invested notional at entry.
@@ -109,11 +87,8 @@ impl UserPortfolio {
             .persistent()
             .get(&key)
             .unwrap_or_else(|| Vec::new(&env));
-        let is_first_ever_open = list.is_empty();
         list.push_back(id);
         env.storage().persistent().set(&key, &list);
-
-        badges::after_open_position(&env, &user, is_first_ever_open);
 
         id
     }
@@ -152,13 +127,6 @@ impl UserPortfolio {
         pos.status = PositionStatus::Closed;
         pos.realized_pnl = realized_pnl;
         env.storage().persistent().set(&pkey, &pos);
-
-        badges::after_close_position(&env, &user, realized_pnl);
-    }
-
-    /// All badges earned by `user`, in award order.
-    pub fn get_badges(env: Env, user: Address) -> Vec<Badge> {
-        badges::get_badges(&env, user)
     }
 
     /// Portfolio P&L including open positions when oracle price is available.
@@ -221,8 +189,7 @@ mod tests {
         env: &Env,
         use_working_oracle: bool,
         initial_price: i128,
-        early_adopter_cap: u32,
-    ) -> (Address, Address, Address, Address) {
+    ) -> (Address, Address, Address) {
         let admin = Address::generate(env);
         let user = Address::generate(env);
         let oracle_id = if use_working_oracle {
@@ -235,15 +202,15 @@ mod tests {
         let contract_id = env.register_contract(None, UserPortfolio);
         let client = UserPortfolioClient::new(env, &contract_id);
         env.mock_all_auths();
-        client.initialize(&admin, &oracle_id, &early_adopter_cap);
-        (admin, user, contract_id, oracle_id)
+        client.initialize(&admin, &oracle_id);
+        (user, contract_id, oracle_id)
     }
 
     /// All positions closed: unrealized is 0, total = realized, ROI uses invested sums.
     #[test]
     fn get_pnl_all_closed() {
         let env = Env::default();
-        let (_, user, portfolio_id, _) = setup_portfolio(&env, true, 100, 1000);
+        let (user, portfolio_id, _) = setup_portfolio(&env, true, 100);
         let client = UserPortfolioClient::new(&env, &portfolio_id);
 
         client.open_position(&user, &100, &1_000);
@@ -263,7 +230,7 @@ mod tests {
     #[test]
     fn get_pnl_all_open() {
         let env = Env::default();
-        let (_, user, portfolio_id, oracle_id) = setup_portfolio(&env, true, 100, 1000);
+        let (user, portfolio_id, oracle_id) = setup_portfolio(&env, true, 100);
         let client = UserPortfolioClient::new(&env, &portfolio_id);
 
         // entry 100, amount 1000, current 120 -> (120-100)*1000/100 = 200
@@ -281,7 +248,7 @@ mod tests {
     #[test]
     fn get_pnl_mixed() {
         let env = Env::default();
-        let (_, user, portfolio_id, oracle_id) = setup_portfolio(&env, true, 50, 1000);
+        let (user, portfolio_id, oracle_id) = setup_portfolio(&env, true, 50);
         let client = UserPortfolioClient::new(&env, &portfolio_id);
 
         client.open_position(&user, &50, &2_000);
@@ -302,7 +269,7 @@ mod tests {
     #[test]
     fn get_pnl_oracle_unavailable() {
         let env = Env::default();
-        let (_, user, portfolio_id, _) = setup_portfolio(&env, false, 0, 1000);
+        let (user, portfolio_id, _) = setup_portfolio(&env, false, 0);
         let client = UserPortfolioClient::new(&env, &portfolio_id);
 
         client.open_position(&user, &100, &1_000);
@@ -317,6 +284,3 @@ mod tests {
         assert_eq!(pnl.roi_bps, 333);
     }
 }
-
-#[cfg(test)]
-mod badge_tests;
