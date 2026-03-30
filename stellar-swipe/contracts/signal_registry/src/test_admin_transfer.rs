@@ -49,7 +49,6 @@ fn test_accept_admin_transfer_success() {
 
     // Now new_admin should be able to execute admin-only functions
     client.set_trade_fee(&new_admin, &25);
-    println!("Transfer completed: new_admin is now the admin");
 }
 
 #[test]
@@ -158,7 +157,6 @@ fn test_transfer_expiry_boundary() {
 
     // Should succeed just before expiry
     client2.accept_admin_transfer(&new_admin);
-    println!("Transfer succeeded just before expiry");
 }
 
 #[test]
@@ -250,7 +248,6 @@ fn test_multiple_transfer_proposals() {
 
     // new_admin_2 should be able to accept
     client.accept_admin_transfer(&new_admin_2);
-    println!("Second admin accepted transfer successfully");
 }
 
 #[test]
@@ -277,7 +274,6 @@ fn test_transfer_chain() {
 
     // Verify admin3 is now the admin
     client.set_trade_fee(&admin3, &30);
-    println!("Admin transfer chain completed successfully");
 }
 
 #[test]
@@ -334,5 +330,4 @@ fn test_propose_no_pending_cleanup_on_expired() {
 
     // new_admin2 should be able to accept (no interference from expired proposal)
     client.accept_admin_transfer(&new_admin2);
-    println!("New transfer succeeded after cleanup of expired transfer");
 }

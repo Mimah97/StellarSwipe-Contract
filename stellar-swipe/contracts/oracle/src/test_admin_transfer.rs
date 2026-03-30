@@ -3,23 +3,33 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env,
+    Address, Env, String,
 };
+
+fn xlm_asset(env: &Env) -> stellar_swipe_common::Asset {
+    stellar_swipe_common::Asset {
+        code: String::from_str(env, "XLM"),
+        issuer: None,
+    }
+}
 
 #[test]
 fn test_propose_admin_transfer_oracle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, Oracle);
-    let client = OracleClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
+    // Initialize the contract first
+    let base_asset = xlm_asset(&env);
+    client.initialize(&admin, &base_asset);
+
     // Propose transfer
     client.propose_admin_transfer(&admin, &new_admin);
-    println!("Oracle: Admin transfer proposed");
 }
 
 #[test]
@@ -27,11 +37,15 @@ fn test_accept_admin_transfer_oracle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, Oracle);
-    let client = OracleClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
+
+    // Initialize the contract first
+    let base_asset = xlm_asset(&env);
+    client.initialize(&admin, &base_asset);
 
     // Propose transfer
     client.propose_admin_transfer(&admin, &new_admin);
@@ -41,7 +55,6 @@ fn test_accept_admin_transfer_oracle() {
 
     // Unpause should work (new_admin is now admin)
     client.unpause_category(&new_admin, &soroban_sdk::String::from_str(&env, "test_category"));
-    println!("Oracle: Transfer completed, new_admin is now admin");
 }
 
 #[test]
@@ -49,11 +62,15 @@ fn test_cancel_admin_transfer_oracle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, Oracle);
-    let client = OracleClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
+
+    // Initialize the contract first
+    let base_asset = xlm_asset(&env);
+    client.initialize(&admin, &base_asset);
 
     // Propose transfer
     client.propose_admin_transfer(&admin, &new_admin);
@@ -71,11 +88,15 @@ fn test_transfer_expiry_oracle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, Oracle);
-    let client = OracleClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
+
+    // Initialize the contract first
+    let base_asset = xlm_asset(&env);
+    client.initialize(&admin, &base_asset);
 
     let initial_timestamp = env.ledger().timestamp();
     client.propose_admin_transfer(&admin, &new_admin);
@@ -95,12 +116,16 @@ fn test_accept_with_wrong_address_oracle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, Oracle);
-    let client = OracleClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, OracleContract);
+    let client = OracleContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
     let wrong_address = Address::generate(&env);
+
+    // Initialize the contract first
+    let base_asset = xlm_asset(&env);
+    client.initialize(&admin, &base_asset);
 
     client.propose_admin_transfer(&admin, &new_admin);
 
