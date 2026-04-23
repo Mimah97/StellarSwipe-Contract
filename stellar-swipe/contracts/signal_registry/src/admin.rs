@@ -10,7 +10,8 @@ use crate::events::*;
 // Constants
 pub const MAX_FEE_BPS: u32 = 100; // 1% max fee
 pub const MAX_RISK_PERCENTAGE: u32 = 100; // 100% max
-const ADMIN_TRANSFER_EXPIRY_LEDGERS: u32 = 34_560; // ~48h at ~5s per ledger close
+/// Wall-clock admin transfer validity (matches admin transfer tests).
+const ADMIN_TRANSFER_EXPIRY_SECS: u64 = 48 * 60 * 60;
 
 // Default values
 pub const DEFAULT_MIN_STAKE: i128 = 100_000_000; // 100 XLM (7 decimals)
@@ -43,7 +44,8 @@ pub enum AdminStorageKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingAdminTransfer {
     pub pending_admin: Address,
-    pub expires_at_ledger: u32,
+    /// Unix timestamp (seconds) after which the proposal cannot be accepted.
+    pub expires_at: u64,
 }
 
 #[contracttype]
@@ -193,13 +195,13 @@ pub fn propose_admin_transfer(
     require_admin(env, caller)?;
     caller.require_auth();
 
-    let expires_at_ledger = env
+    let expires_at = env
         .ledger()
-        .sequence()
-        .saturating_add(ADMIN_TRANSFER_EXPIRY_LEDGERS);
+        .timestamp()
+        .saturating_add(ADMIN_TRANSFER_EXPIRY_SECS);
     let pending = PendingAdminTransfer {
         pending_admin: new_admin.clone(),
-        expires_at_ledger,
+        expires_at,
     };
 
     env.storage()
